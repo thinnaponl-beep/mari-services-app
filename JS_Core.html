@@ -1,0 +1,764 @@
+<script>
+    // --- 0. Global UI Fixes (Inject CSS) ---
+    (function() {
+        if (document.getElementById('global-ui-fixes')) return;
+        var style = document.createElement('style');
+        style.id = 'global-ui-fixes';
+        style.innerHTML = `
+            /* 💡 แก้ปัญหา Sidebar เละ โดนบีบ และมีแถบเลื่อนแนวนอน */
+            #mainSidebar { min-width: 256px !important; flex-shrink: 0 !important; overflow-x: hidden !important; }
+            #mainSidebar.collapsed { min-width: 80px !important; width: 80px !important; overflow: hidden !important; }
+            #mainSidebar .custom-scrollbar { overflow-x: hidden !important; }
+        `;
+        document.head.appendChild(style);
+    })();
+
+    // --- 0. Utility Functions ---
+    function getStartOfWeek(date) {
+        var d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        var day = d.getDay();
+        var diff = d.getDate() - day + (day === 0 ? -6 : 1); 
+        return new Date(d.setDate(diff));
+    }
+
+    function formatDateString(date) {
+        if (!date) return '';
+        var d = new Date(date),
+            month = '' + (d.getMonth() + 1),
+            day = '' + d.getDate(),
+            year = d.getFullYear();
+        if (month.length < 2) month = '0' + month;
+        if (day.length < 2) day = '0' + day;
+        return [year, month, day].join('-');
+    }
+
+    function getRandomColor() {
+        var colors = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e'];
+        return colors[Math.floor(Math.random() * colors.length)];
+    }
+
+    function previewImage(url, title) {
+        if(typeof showCustomDialog === 'function') {
+            showCustomDialog({ title: title || 'รูปโปรไฟล์', message: '', type: 'info', buttons: [{ text: 'ปิดหน้าต่าง', style: 'cancel' }] });
+            var iconEl = document.getElementById('customDialogIcon');
+            if(iconEl) {
+                iconEl.className = 'w-24 h-24 rounded-full flex items-center justify-center mb-4 shadow-inner overflow-hidden border-2 border-gray-100 bg-gray-50';
+                iconEl.innerHTML = '<img src="' + url + '" class="w-full h-full object-cover">';
+            }
+        } else {
+            window.open(url, '_blank');
+        }
+    }
+
+    // --- 1. Global State Variables ---
+    var MOCK_CLIENTS = [];
+    var MOCK_HOUSEKEEPERS = [];
+    var MOCK_SHIFTS = [];
+    var MOCK_USERS = []; 
+    var MOCK_ISSUES = []; 
+    var MOCK_SITE_ACTIVITIES = []; 
+    var MOCK_NOTIFICATIONS = []; 
+    var MOCK_ATTENDANCE = []; 
+
+    var currentDate = new Date(); 
+    var currentWeekStart = getStartOfWeek(currentDate);
+    var draggedShiftData = null; 
+    var currentViewMode = 'week'; 
+    var thaiAddressData = []; 
+    var CURRENT_USER = null;
+
+    // --- 2. ระบบเช็ค Login ---
+    function checkLogin() {
+        var todayStr = new Date().toDateString(); 
+        var cachedLoginDate = localStorage.getItem('mari_login_date');
+        var cachedUserData = localStorage.getItem('mari_user_data');
+
+        if (cachedLoginDate === todayStr && cachedUserData) {
+            try {
+                CURRENT_USER = JSON.parse(cachedUserData);
+                applyUserRoleAndStart(); 
+            } catch(e) {
+                showLoginScreen();
+            }
+        } else {
+            showLoginScreen();
+        }
+    }
+
+    function showLoginScreen() {
+        var loginScreen = document.getElementById('loginScreen');
+        if (loginScreen) {
+            loginScreen.classList.remove('hidden');
+            loginScreen.style.display = 'flex';
+        }
+        var loadingOverlay = document.getElementById('loadingOverlay');
+        if (loadingOverlay) {
+            loadingOverlay.style.opacity = '0';
+            setTimeout(function() { loadingOverlay.style.display = 'none'; }, 300);
+        }
+    }
+
+    function resetLoginButton() {
+        var btnLogin = document.getElementById('btnLogin');
+        if (btnLogin) {
+            btnLogin.innerHTML = '<div class="bg-white p-1.5 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform"><svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg></div> ลงชื่อเข้าใช้ด้วยบัญชี Google';
+            btnLogin.disabled = false;
+        }
+    }
+
+    function verifyWithBackend() {
+        var loginScreen = document.getElementById('loginScreen');
+        var errorMsg = document.getElementById('loginErrorMsg');
+        var errorText = document.getElementById('loginErrorText');
+        var btnLogin = document.getElementById('btnLogin');
+        
+        if (errorMsg) errorMsg.classList.add('hidden');
+        if (btnLogin) {
+            btnLogin.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> กำลังตรวจสอบสิทธิ์...';
+            btnLogin.disabled = true;
+        }
+
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
+            google.script.run
+                .withSuccessHandler(function(res) {
+                    if (res.status === 'success') {
+                        CURRENT_USER = res.user;
+                        localStorage.setItem('mari_login_date', new Date().toDateString());
+                        localStorage.setItem('mari_user_data', JSON.stringify(CURRENT_USER));
+                        
+                        if (loginScreen) {
+                            loginScreen.style.display = 'none';
+                        }
+                        
+                        var overlay = document.getElementById('loadingOverlay');
+                        if (overlay) { overlay.style.display = 'flex'; overlay.style.opacity = '1'; }
+                        
+                        applyUserRoleAndStart();
+                    } else {
+                        resetLoginButton();
+                        if (errorMsg) errorMsg.classList.remove('hidden');
+                        if (errorText) errorText.innerText = res.message;
+                        showLoginScreen(); 
+                    }
+                })
+                .withFailureHandler(function(err) {
+                    resetLoginButton();
+                    if (errorMsg) errorMsg.classList.remove('hidden');
+                    if (errorText) errorText.innerText = 'เชื่อมต่อเซิร์ฟเวอร์ล้มเหลว กรุณาลองใหม่';
+                    showLoginScreen();
+                })
+                .verifyUserLogin();
+        } else {
+            CURRENT_USER = { email: 'test@mariservices.com', name: 'Test Admin', role: 'Admin / Supervisor' };
+            if (loginScreen) loginScreen.style.display = 'none';
+            var overlay = document.getElementById('loadingOverlay');
+            if (overlay) { overlay.style.display = 'flex'; overlay.style.opacity = '1'; }
+            applyUserRoleAndStart();
+        }
+    }
+
+    function applyUserRoleAndStart() {
+        var nameEl = document.getElementById('currentUserName');
+        var roleEl = document.getElementById('currentUserRole');
+        var sideNameEl = document.getElementById('sidebarUserName');
+        var sideRoleEl = document.getElementById('sidebarUserRole');
+
+        if (nameEl) nameEl.innerText = CURRENT_USER.name;
+        if (roleEl) roleEl.innerText = CURRENT_USER.role;
+        if (sideNameEl) sideNameEl.innerText = CURRENT_USER.name;
+        if (sideRoleEl) sideRoleEl.innerText = CURRENT_USER.role;
+
+        var avatarUrl = 'https://ui-avatars.com/api/?name=' + encodeURIComponent(CURRENT_USER.name) + '&background=3d5a6c&color=fff';
+        var avTop = document.getElementById('currentUserAvatar');
+        var avSide = document.getElementById('sidebarUserAvatar');
+        if (avTop) avTop.src = avatarUrl;
+        if (avSide) avSide.src = avatarUrl;
+
+        var menuDatabase = document.getElementById('menu-manage');
+        var menuSystem = document.getElementById('menu-users');
+
+        if (CURRENT_USER.role === 'Viewer') {
+            if(menuDatabase) menuDatabase.style.display = 'none';
+            if(menuSystem) menuSystem.style.display = 'none';
+        } else if (CURRENT_USER.role === 'AE/หัวหน้าแม่บ้าน' || CURRENT_USER.role === 'Supervisor') {
+            if(menuDatabase) menuDatabase.style.display = 'flex';
+            if(menuSystem) menuSystem.style.display = 'none';
+            
+            var systemHeader = document.querySelector('#menu-section-system p');
+            if (systemHeader) systemHeader.style.display = 'none';
+        } else {
+            if(menuDatabase) menuDatabase.style.display = 'flex';
+            if(menuSystem) menuSystem.style.display = 'flex';
+            
+            var systemHeader = document.querySelector('#menu-section-system p');
+            if (systemHeader) systemHeader.style.display = 'block';
+        }
+
+        if(typeof initSearchableDropdowns === 'function') initSearchableDropdowns(); 
+        if(typeof initPhoneValidation === 'function') initPhoneValidation(); 
+        if(typeof loadThaiAddressData === 'function') loadThaiAddressData(); 
+        if(typeof initAddressListeners === 'function') initAddressListeners();
+        
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
+            google.script.run
+                .withSuccessHandler(function(response) {
+                    processBackendData(response);
+                    switchMainView('view-schedule', 'menu-schedule');
+                    hideLoading();
+                })
+                .withFailureHandler(function(error) {
+                    console.error("Backend Error:", error);
+                    useFallbackMockData();
+                    switchMainView('view-schedule', 'menu-schedule');
+                    hideLoading();
+                })
+                .getAppData();
+        } else {
+            useFallbackMockData();
+            switchMainView('view-schedule', 'menu-schedule');
+            setTimeout(hideLoading, 500);
+        }
+    }
+
+    function logout() {
+        if(typeof showCustomDialog === 'function') {
+            showCustomDialog({
+                title: 'ยืนยันการออกจากระบบ',
+                message: 'คุณต้องการออกจากระบบ MARI Services ใช่หรือไม่?',
+                type: 'warning',
+                buttons: [
+                    { text: 'ยกเลิก', style: 'cancel' },
+                    { text: 'ออกจากระบบ', style: 'danger', action: processLogout }
+                ]
+            });
+        } else {
+            if(confirm('คุณต้องการออกจากระบบใช่หรือไม่?')) processLogout();
+        }
+    }
+
+    function processLogout() {
+        localStorage.removeItem('mari_login_date');
+        localStorage.removeItem('mari_user_data');
+        CURRENT_USER = null;
+
+        document.querySelectorAll('.view-container').forEach(function(el) { 
+            el.classList.add('hidden'); 
+            el.classList.remove('flex', 'active'); 
+        });
+
+        resetLoginButton();
+        var errorMsg = document.getElementById('loginErrorMsg');
+        if (errorMsg) errorMsg.classList.add('hidden');
+
+        showLoginScreen();
+    }
+
+    function setInputValue(id, value) {
+        var el = document.getElementById(id);
+        if (el) { el.value = value; }
+    }
+
+    function initSearchableDropdowns() {
+        var jq = document.createElement('script');
+        jq.src = 'https://code.jquery.com/jquery-3.7.1.min.js';
+        jq.onload = function() {
+            var css = document.createElement('link');
+            css.rel = 'stylesheet';
+            css.href = 'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css';
+            document.head.appendChild(css);
+
+            var s2 = document.createElement('script');
+            s2.src = 'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js';
+            s2.onload = function() {
+                var style = document.createElement('style');
+                style.innerHTML = ".select2-container .select2-selection--single { height: 42px !important; border: 1px solid #d1d5db !important; border-radius: 0.375rem !important; display: flex; align-items: center; background-color: #f9fafb; font-family: 'Prompt', sans-serif; }" +
+                                  ".select2-container--default .select2-selection--single .select2-selection__rendered { color: #374151 !important; padding-left: 0.75rem !important; font-size: 0.875rem !important; }" +
+                                  ".select2-container--default .select2-selection--single .select2-selection__arrow { height: 40px !important; right: 6px !important; }" +
+                                  ".select2-container--default.select2-container--open .select2-selection--single { border-color: #3d5a6c !important; background-color: #ffffff; box-shadow: 0 0 0 1px #3d5a6c; }" +
+                                  ".select2-container--default .select2-selection--multiple { min-height: 42px !important; border: 1px solid #d1d5db !important; border-radius: 0.375rem !important; padding: 2px 4px !important; font-family: 'Prompt', sans-serif; }" +
+                                  ".select2-container--default.select2-container--focus .select2-selection--multiple { border-color: #3d5a6c !important; box-shadow: 0 0 0 1px #3d5a6c; }" +
+                                  ".select2-container--default .select2-selection--multiple .select2-selection__choice { background-color: #f0f4f8 !important; border: 1px solid #3d5a6c !important; color: #3d5a6c !important; border-radius: 0.25rem !important; padding: 2px 6px !important; margin-top: 6px !important; font-size: 12px; font-weight: bold; }" +
+                                  ".select2-dropdown { border: 1px solid #d1d5db !important; border-radius: 0.375rem !important; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1) !important; font-size: 0.875rem !important; font-family: 'Prompt', sans-serif; z-index: 99999 !important; }" +
+                                  ".select2-search__field { border-radius: 0.25rem !important; border: 1px solid #d1d5db !important; outline: none !important; padding: 6px 12px !important; font-family: 'Prompt', sans-serif; }" +
+                                  ".select2-search__field:focus { border-color: #3d5a6c !important; }" +
+                                  ".select2-results__option--highlighted[aria-selected] { background-color: #3d5a6c !important; color: white !important; }";
+                document.head.appendChild(style);
+
+                $('#clientProvince, #clientDistrict, #clientTambon, #modalClient').select2({ width: '100%' });
+                $('#staffZones').select2({ width: '100%', tags: true, placeholder: "-- พิมพ์หรือเลือกโซน --" });
+
+                $('#clientProvince').on('select2:select', function (e) { var el = document.getElementById('clientProvince'); if(el) el.dispatchEvent(new Event('change')); });
+                $('#clientDistrict').on('select2:select', function (e) { var el = document.getElementById('clientDistrict'); if(el) el.dispatchEvent(new Event('change')); });
+                $('#clientTambon').on('select2:select', function (e) { var el = document.getElementById('clientTambon'); if(el) el.dispatchEvent(new Event('change')); });
+                $('#modalClient').on('select2:select', function (e) { var el = document.getElementById('modalClient'); if(el) el.dispatchEvent(new Event('change')); });
+            };
+            document.head.appendChild(s2);
+        };
+        document.head.appendChild(jq);
+    }
+
+    function initPhoneValidation() {
+        var phoneInput = document.getElementById('staffPhone');
+        if (phoneInput) {
+            phoneInput.setAttribute('maxlength', '10');
+            phoneInput.addEventListener('input', function(e) {
+                this.value = this.value.replace(/[^0-9]/g, ''); 
+            });
+        }
+    }
+
+    function toggleSidebar() {
+        var sidebar = document.getElementById('mainSidebar');
+        if(sidebar) {
+            sidebar.classList.toggle('collapsed');
+            
+            var isCollapsed = sidebar.classList.contains('collapsed');
+            var logoLarge = sidebar.querySelector('.logo-large');
+            var logoSmall = sidebar.querySelector('.logo-small');
+            
+            if (isCollapsed) {
+                if(logoLarge) logoLarge.style.display = 'none';
+                if(logoSmall) { 
+                    logoSmall.classList.remove('hidden'); 
+                    logoSmall.style.display = 'flex'; 
+                }
+            } else {
+                if(logoLarge) logoLarge.style.display = 'block';
+                if(logoSmall) { 
+                    logoSmall.classList.add('hidden'); 
+                    logoSmall.style.display = 'none'; 
+                }
+            }
+        }
+    }
+
+    function switchMainView(viewId, menuId) {
+        // 1. ล้างไฮไลต์เมนูเก่า และไฮไลต์เมนูใหม่
+        document.querySelectorAll('.sidebar-menu').forEach(function(el) {
+            el.className = "sidebar-menu w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium text-gray-500 hover:bg-gray-50 hover:text-brand transition";
+        });
+        var activeMenu = document.getElementById(menuId);
+        if(activeMenu) {
+            activeMenu.className = "sidebar-menu w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-bold bg-brandLight text-brand transition";
+        }
+
+        // 2. ซ่อนทุกหน้าจอ และแสดงเฉพาะหน้าจอที่เลือก (แก้ปัญหาหน้าเบียดกัน)
+        document.querySelectorAll('.view-container').forEach(function(el) {
+            el.classList.add('hidden');
+            el.classList.remove('flex');
+        });
+        var activeView = document.getElementById(viewId);
+        if(activeView) {
+            activeView.classList.remove('hidden');
+            activeView.classList.add('flex');
+        }
+
+        // 3. เปลี่ยนชื่อ Title ด้านบน
+        var titleEl = document.getElementById('mainTitle') || document.getElementById('globalPageTitle');
+        if (titleEl) {
+            if (viewId === 'view-schedule') titleEl.innerHTML = 'ตารางงาน<br><span class="text-[14px] font-medium text-gray-500">(Schedule)</span>';
+            else if (viewId === 'view-attendance') titleEl.innerHTML = 'เวลาเข้า-ออก<br><span class="text-[14px] font-medium text-gray-500">(Attendance)</span>';
+            else if (viewId === 'view-inspection') titleEl.innerHTML = 'แผนตรวจงาน<br><span class="text-[14px] font-medium text-gray-500">(Inspection)</span>';
+            else if (viewId === 'view-issues') titleEl.innerHTML = 'แจ้งปัญหา<br><span class="text-[14px] font-medium text-gray-500">(Issues)</span>';
+            else if (viewId === 'view-manage') titleEl.innerHTML = 'จัดการข้อมูลหลัก<br><span class="text-[14px] font-medium text-gray-500">(Manage Data)</span>';
+            else if (viewId === 'view-users') titleEl.innerHTML = 'ตั้งค่าสิทธิ์<br><span class="text-[14px] font-medium text-gray-500">(Users)</span>';
+        }
+
+        // 4. สั่งโหลดข้อมูลตามหน้าจอที่กด
+        if(viewId === 'view-schedule' && typeof filterGridData === 'function') filterGridData();
+        
+        if(viewId === 'view-attendance' && typeof initAttendanceView === 'function') {
+            var startInput = document.getElementById('attFilterStartDate');
+            if (startInput && startInput.value === '') { initAttendanceView(); }
+            else { renderAttendanceTable(); }
+        }
+        
+        if(viewId === 'view-inspection' && typeof initInspectionView === 'function') initInspectionView();
+        if(viewId === 'view-issues' && typeof initIssuesView === 'function') initIssuesView();
+        
+        if(viewId === 'view-manage' && typeof renderStaffTable === 'function') {
+            renderStaffTable();
+            renderClientTable();
+        }
+        if(viewId === 'view-users' && typeof renderUserTable === 'function') renderUserTable();
+
+        // ปิด Sidebar บนมือถือ
+        if(window.innerWidth < 1024 && typeof toggleSidebar === 'function') { toggleSidebar(); }
+    }
+
+    function switchManageTab(tab) {
+        document.querySelectorAll('.manage-content').forEach(function(el) {
+            el.classList.add('hidden'); 
+            el.classList.remove('flex', 'active');
+        });
+        document.querySelectorAll('[id^="tab-manage-"]').forEach(function(el) {
+            el.classList.remove('border-brand', 'text-brand');
+            el.classList.add('border-transparent', 'text-gray-500');
+        });
+        
+        var contentEl = document.getElementById('content-manage-' + tab);
+        if(contentEl) { 
+            contentEl.classList.remove('hidden'); 
+            contentEl.classList.add('flex', 'active'); 
+        }
+        
+        var btnEl = document.getElementById('tab-manage-' + tab);
+        if(btnEl) { 
+            btnEl.classList.remove('border-transparent', 'text-gray-500');
+            btnEl.classList.add('border-brand', 'text-brand');
+        }
+    }
+
+    function hideLoading() {
+        var overlay = document.getElementById('loadingOverlay');
+        if (overlay) {
+            overlay.style.opacity = '0';
+            setTimeout(function() { overlay.style.display = 'none'; }, 500);
+        }
+    }
+
+    function showToast(message) {
+        var toast = document.getElementById('toastNotification');
+        if (toast) {
+            document.getElementById('toastMessage').innerText = message;
+            toast.classList.remove('translate-x-full', 'opacity-0');
+            setTimeout(function() { toast.classList.add('translate-x-full', 'opacity-0'); }, 3500);
+        }
+    }
+
+    function loadThaiAddressData() {
+        var cachedData = localStorage.getItem('mari_thai_address_sheet_v1');
+        if (cachedData) {
+            try {
+                thaiAddressData = JSON.parse(cachedData);
+                populateProvinceDropdown();
+                return;
+            } catch(e) {}
+        }
+
+        if (typeof google !== 'undefined' && google.script && google.script.run) {
+            google.script.run
+                .withSuccessHandler(function(flatData) {
+                    if (flatData && flatData.length > 0) { buildAddressTree(flatData); }
+                })
+                .getAddressDataFromSheet(); 
+        }
+    }
+
+    function buildAddressTree(flatData) {
+        var tree = {};
+        flatData.forEach(function(item) {
+            var prov = item.ProvinceThai; var amp = item.DistrictThai; var tam = item.TambonThai; var zip = item.postCode;
+            if (!prov || !amp) return; 
+            if (!tree[prov]) tree[prov] = {};
+            if (!tree[prov][amp]) tree[prov][amp] = [];
+            if (tam) { tree[prov][amp].push({ name_th: tam, zip_code: zip }); }
+        });
+
+        thaiAddressData = Object.keys(tree).sort().map(function(provName) {
+            return {
+                name_th: provName,
+                amphure: Object.keys(tree[provName]).sort().map(function(ampName) {
+                    return { name_th: ampName, tambon: tree[provName][ampName].sort(function(a,b) { return a.name_th.localeCompare(b.name_th); }) };
+                })
+            };
+        });
+        localStorage.setItem('mari_thai_address_sheet_v1', JSON.stringify(thaiAddressData));
+        populateProvinceDropdown();
+    }
+
+    function populateProvinceDropdown() {
+        var selProv = document.getElementById('clientProvince');
+        if (!selProv) return;
+        selProv.innerHTML = '<option value="">-- เลือกจังหวัด --</option>';
+        thaiAddressData.forEach(function(p) {
+            var opt = document.createElement('option');
+            opt.value = p.name_th; opt.text = p.name_th;
+            selProv.appendChild(opt);
+        });
+        if (window.jQuery && $.fn.select2) $('#clientProvince').trigger('change.select2');
+    }
+
+    function initAddressListeners() {
+        var elClientProv = document.getElementById('clientProvince');
+        if(elClientProv) {
+            elClientProv.addEventListener('change', function(e) {
+                var provName = e.target.value;
+                var prov = thaiAddressData.find(function(p) { return p.name_th === provName; });
+                var selDist = document.getElementById('clientDistrict');
+                var selTam = document.getElementById('clientTambon');
+                
+                if (selDist) selDist.innerHTML = '<option value="">-- เลือกอำเภอ/เขต --</option>';
+                if (selTam) selTam.innerHTML = '<option value="">-- เลือกตำบล/แขวง --</option>';
+                setInputValue('clientZipcode', '');
+
+                if (prov && selDist) {
+                    prov.amphure.forEach(function(a) {
+                        var opt = document.createElement('option'); opt.value = a.name_th; opt.text = a.name_th; selDist.appendChild(opt);
+                    });
+                }
+                if (window.jQuery && $.fn.select2) { $('#clientDistrict').trigger('change.select2'); $('#clientTambon').trigger('change.select2'); }
+            });
+        }
+
+        var elClientDist = document.getElementById('clientDistrict');
+        if(elClientDist) {
+            elClientDist.addEventListener('change', function(e) {
+                var provName = document.getElementById('clientProvince').value;
+                var distName = e.target.value;
+                var prov = thaiAddressData.find(function(p) { return p.name_th === provName; });
+                var selTam = document.getElementById('clientTambon');
+                
+                if (selTam) selTam.innerHTML = '<option value="">-- เลือกตำบล/แขวง --</option>';
+                setInputValue('clientZipcode', '');
+
+                if (prov && selTam) {
+                    var dist = prov.amphure.find(function(a) { return a.name_th === distName; });
+                    if (dist && dist.tambon) {
+                        dist.tambon.forEach(function(t) {
+                            var opt = document.createElement('option'); opt.value = t.name_th; opt.text = t.name_th; selTam.appendChild(opt);
+                        });
+                    }
+                }
+                if (window.jQuery && $.fn.select2) { $('#clientTambon').trigger('change.select2'); }
+            });
+        }
+
+        var elClientTam = document.getElementById('clientTambon');
+        if(elClientTam) {
+            elClientTam.addEventListener('change', function(e) {
+                var provName = document.getElementById('clientProvince').value;
+                var distName = document.getElementById('clientDistrict').value;
+                var tamName = e.target.value;
+
+                var prov = thaiAddressData.find(function(p) { return p.name_th === provName; });
+                if (prov) {
+                    var dist = prov.amphure.find(function(a) { return a.name_th === distName; });
+                    if (dist && dist.tambon) {
+                        var tam = dist.tambon.find(function(t) { return t.name_th === tamName; });
+                        if (tam && tam.zip_code) { setInputValue('clientZipcode', tam.zip_code); }
+                    }
+                }
+            });
+        }
+    }
+
+    function processBackendData(data) {
+        if (!data) { useFallbackMockData(); return; }
+
+        MOCK_CLIENTS = data.clients.map(function(c) {
+            return {
+                id: c.client_id, name: c.client_name, address: c.address, district: c.district, province: c.province,
+                type: c.type || 'b2b', color: c.color_hex || '#e2e8f0', reqStaff: c.required_hk_per_day || 1,
+                contact: c.contact_person, phone: c.phone, status: c.status || 'Active', contractHours: c.contract_hours || 0,
+                serviceDays: c.service_days || '',frequency: c.frequency || '',startDate: c.start_date || '',endDate: c.end_date || '',
+                // 💡 เพิ่มการเก็บค่าพิกัด
+                lat: c.lat || '', lng: c.lng || ''
+            };
+        });
+        if(MOCK_CLIENTS.length === 0) MOCK_CLIENTS = [{ id: 'CL-001', name: 'งานรอจัดสรร (Unassigned)', type: 'system', color: '#e2e8f0', reqStaff: 1 }];
+
+        MOCK_HOUSEKEEPERS = data.housekeepers.map(function(h) {
+            var validAvatar = (h.avatar && h.avatar.trim() !== '') ? h.avatar : ('https://ui-avatars.com/api/?name=' + encodeURIComponent(h.name || 'User') + '&background=f0f4f8&color=3d5a6c');
+            return {
+                id: h.hk_id, name: h.name || 'ไม่มีชื่อ', nickname: h.nickname || '-',
+                phone: h.phone, lineId: h.line_id, type: h.job_type || 'Full-time', status: h.status || 'Active',
+                skills: h.special_skills || '', zones: h.zones || '', maxHoursWeek: h.max_hours_week || 48,
+                startDate: h.start_date || '', endDate: h.end_date || '',
+                avatar: validAvatar, color: h.color || '#3b82f6',
+                // 💡 เพิ่มการเก็บค่า PIN สำหรับพนักงานแต่ละคน
+                pin: h.pin || ''
+            };
+        });
+
+        MOCK_SHIFTS = data.shifts.map(function(s) {
+            var hkArray = s.assigned_hk_ids ? s.assigned_hk_ids.toString().split(',').map(function(id) { return id.trim(); }).filter(function(id) { return id; }) : [];
+            return { id: s.shift_id, clientId: s.client_id, date: s.date, start: s.start_time, end: s.end_time, hks: hkArray, status: s.status || 'scheduled', notes: s.notes || '', groupId: s.recurring_group_id || '' };
+        });
+        
+        MOCK_USERS = data.users && data.users.length > 0 ? data.users.map(function(u) {
+            return { id: u.email, name: u.name || 'ไม่มีชื่อ', email: u.email, role: u.role || 'Viewer', status: u.is_active ? 'Active' : 'Inactive' };
+        }) : [ { id: 'U1', name: 'Admin User', email: 'admin@mariservices.com', role: 'Admin', status: 'Active' } ];
+
+        if(data.siteActivities) {
+            MOCK_SITE_ACTIVITIES = data.siteActivities.map(function(a) {
+                return {
+                    id: a.act_id, 
+                    clientId: a.client_id, 
+                    date: a.date, 
+                    type: a.type, 
+                    remark: a.remark, 
+                    actionBy: a.action_by
+                };
+            });
+        }
+
+        if(data.issues) {
+            MOCK_ISSUES = data.issues.map(function(i) {
+                return {
+                    id: i.issue_id, clientId: i.client_id, dateReported: i.date_reported,
+                    source: i.source || 'housekeeper', providerId: i.provider_id || '',
+                    category: i.category, description: i.description, status: i.status || 'Pending',
+                    assignedTo: i.assigned_to || '', dueDate: i.due_date || '', 
+                    actionTaken: i.action_taken || '', 
+                    resolutionNote: i.resolution_note || ''
+                };
+            });
+        }
+
+        if(data.attendance) {
+            MOCK_ATTENDANCE = data.attendance.map(function(a) {
+                return {
+                    id: a.record_id, shiftId: a.shift_id, hkId: a.hk_id, clientId: a.client_id,
+                    date: a.date, checkInTime: a.check_in_time, checkInImg: a.check_in_img,
+                    checkInLat: a.check_in_lat, checkInLng: a.check_in_lng,
+                    checkOutTime: a.check_out_time, checkOutSiteImg: a.check_out_site_img,
+                    checkOutDocImg: a.check_out_doc_img, status: a.status
+                };
+            });
+        }
+
+        // จำลองการแจ้งเตือน (ลบออกหรือแทนที่ด้วยข้อมูลจริงจาก Backend ได้ในอนาคต)
+        MOCK_NOTIFICATIONS = [
+            { id: 'N1', title: 'ต้อนรับสู่ระบบ MARI', message: 'ตรวจสอบตารางงานและแจ้งเตือนได้ที่นี่', type: 'System', isRead: false, linkId: null, timestamp: new Date() }
+        ];
+
+        refreshAllViews();
+        renderNotifications(); 
+    }
+
+    function useFallbackMockData() {
+        MOCK_CLIENTS = [ { id: 'CL-001', name: 'งานรอจัดสรร (Unassigned)', type: 'system', color: '#e2e8f0', reqStaff: 1 } ];
+        MOCK_HOUSEKEEPERS = [ { id: 'HK-001', name: 'สมใจ รักสะอาด', nickname: 'ใจ', type: 'Full-time', status: 'Active', phone: '089-123-4567', avatar: 'https://ui-avatars.com/api/?name=' + encodeURIComponent('สมใจ') + '&background=e2e8f0&color=3d5a6c', color: '#ec4899' } ];
+        MOCK_SHIFTS = [];
+        MOCK_USERS = [ { id: 'U1', name: 'Admin User', email: 'admin@mariservices.com', role: 'Admin', status: 'Active' } ];
+        MOCK_ISSUES = []; 
+        MOCK_SITE_ACTIVITIES = []; 
+        MOCK_NOTIFICATIONS = [];
+        
+        refreshAllViews();
+        renderNotifications(); 
+    }
+
+    // --- 💡 ระบบแจ้งเตือน (Notifications) ---
+    function toggleNotificationDropdown(e) {
+        if(e) e.stopPropagation();
+        var dropdown = document.getElementById('notiDropdown');
+        if (dropdown.classList.contains('invisible')) {
+            dropdown.classList.remove('invisible', 'opacity-0');
+            dropdown.classList.add('opacity-100');
+        } else {
+            dropdown.classList.add('invisible', 'opacity-0');
+            dropdown.classList.remove('opacity-100');
+        }
+    }
+
+    function addSystemNotification(title, message, type, linkId) {
+        var noti = {
+            id: 'NOTI-' + new Date().getTime(),
+            title: title,
+            message: message,
+            type: type, 
+            isRead: false,
+            linkId: linkId,
+            timestamp: new Date()
+        };
+        MOCK_NOTIFICATIONS.unshift(noti); 
+        renderNotifications();
+        showToast('การแจ้งเตือน: ' + title);
+    }
+
+    function markAllNotificationsRead(e) {
+        if(e) e.stopPropagation();
+        MOCK_NOTIFICATIONS.forEach(function(n) { n.isRead = true; });
+        renderNotifications();
+    }
+
+    function handleNotiClick(notiId, type, linkId) {
+        var noti = MOCK_NOTIFICATIONS.find(function(n) { return n.id === notiId; });
+        if(noti) noti.isRead = true;
+        renderNotifications();
+        
+        var dropdown = document.getElementById('notiDropdown');
+        if(dropdown) dropdown.classList.add('invisible', 'opacity-0');
+
+        // เมื่อคลิกการแจ้งเตือนให้ลิงก์ไปหน้าต่างๆ
+        if (type && type.includes('Issue') && typeof switchMainView === 'function') {
+            switchMainView('view-issues', 'menu-issues');
+            if (linkId && typeof editIssue === 'function') {
+                setTimeout(function() { editIssue(linkId); }, 300);
+            }
+        }
+    }
+
+    function renderNotifications() {
+        var container = document.getElementById('notiListContainer');
+        var badge = document.getElementById('notiBadge');
+        if(!container || !badge) return;
+
+        var unreadCount = MOCK_NOTIFICATIONS.filter(function(n) { return !n.isRead; }).length;
+        if(unreadCount > 0) {
+            badge.innerText = unreadCount > 9 ? '9+' : unreadCount;
+            badge.classList.remove('hidden');
+        } else {
+            badge.classList.add('hidden');
+        }
+
+        if(MOCK_NOTIFICATIONS.length === 0) {
+            container.innerHTML = '<div class="px-4 py-8 text-center text-gray-400 text-[12px] italic">ไม่มีการแจ้งเตือน</div>';
+            return;
+        }
+
+        var html = '';
+        MOCK_NOTIFICATIONS.forEach(function(n) {
+            var bgClass = n.isRead ? 'bg-white' : 'bg-blue-50/40';
+            var iconHtml = '<div class="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-bell text-[12px]"></i></div>';
+            
+            if(n.type === 'IssueAssigned') iconHtml = '<div class="w-8 h-8 rounded-full bg-orange-100 text-orange-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-user-check text-[12px]"></i></div>';
+            else if(n.type === 'IssueRejected') iconHtml = '<div class="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-xmark text-[12px]"></i></div>';
+            else if(n.type === 'IssueResolved') iconHtml = '<div class="w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-check-double text-[12px]"></i></div>';
+
+            var timeStr = n.timestamp.getHours().toString().padStart(2,'0') + ':' + n.timestamp.getMinutes().toString().padStart(2,'0');
+
+            html += '<div onclick="handleNotiClick(\'' + n.id + '\', \'' + n.type + '\', \'' + n.linkId + '\')" class="px-4 py-3 border-b border-gray-50 flex items-start gap-3 cursor-pointer hover:bg-gray-50 transition ' + bgClass + '">' +
+                        iconHtml +
+                        '<div class="flex flex-col flex-1 min-w-0">' +
+                            '<span class="text-[12px] font-bold text-gray-800 leading-tight">' + n.title + '</span>' +
+                            '<span class="text-[11px] text-gray-500 mt-0.5 line-clamp-2 leading-snug">' + n.message + '</span>' +
+                            '<span class="text-[9px] text-gray-400 mt-1"><i class="fa-regular fa-clock"></i> ' + timeStr + '</span>' +
+                        '</div>' +
+                    '</div>';
+        });
+        container.innerHTML = html;
+    }
+
+    // คลิกหน้าจอส่วนอื่นแล้วปิด Dropdown แจ้งเตือน
+    document.addEventListener('click', function(e) {
+        var dropdown = document.getElementById('notiDropdown');
+        if (dropdown && !dropdown.classList.contains('invisible')) {
+            if (!dropdown.contains(e.target) && !e.target.closest('[onclick="toggleNotificationDropdown(event)"]')) {
+                dropdown.classList.add('invisible', 'opacity-0');
+            }
+        }
+    });
+
+    function refreshAllViews() {
+        if(typeof initModalForms === 'function') initModalForms();
+        if(typeof filterGridData === 'function') filterGridData(); 
+        if(typeof renderStaffTable === 'function') renderStaffTable();
+        if(typeof renderClientTable === 'function') renderClientTable();
+        if(typeof renderUserTable === 'function') renderUserTable();
+        
+        if(typeof initIssuesView === 'function') initIssuesView();
+        if(typeof renderIssuesTable === 'function') renderIssuesTable(); 
+
+        if(typeof renderInspectionMatrix === 'function') renderInspectionMatrix();
+    }
+
+    function closeModal(id) { 
+        var modal = document.getElementById(id);
+        if (modal) modal.classList.add('hidden'); 
+    }
+
+</script>
